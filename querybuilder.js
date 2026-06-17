@@ -2,6 +2,8 @@ const sqlite3 = require('sqlite3').verbose();
 const readline = require('readline');
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
+const os = require('os');
 const Table = require('cli-table3');
 const chalk = require('chalk');
 
@@ -14,54 +16,112 @@ let savedScripts = {};
 let queryLog = [];
 let inTransaction = false;
 let templates = {};
-const historyFile = '.query_history.json';
-const scriptsFile = '.saved_scripts.json';
-const templatesFile = '.query_templates.json';
-const migrationsDir = 'migrations';
+
+const DATA_ROOT = process.env.QB_DATA_DIR || path.join(os.homedir(), '.querybuilder');
+const migrationsDir = path.join(__dirname, 'migrations');
+
+function hashPath(absPath) {
+  return crypto.createHash('sha256').update(absPath).digest('hex').slice(0, 16);
+}
+
+function getDbDataDir(absPath) {
+  const dir = path.join(DATA_ROOT, 'data', hashPath(absPath));
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true });
+  }
+  return dir;
+}
+
+function getDataFilePath(absPath, filename) {
+  return path.join(getDbDataDir(absPath), filename);
+}
 
 function loadPersistentData() {
+  if (!dbPath) return;
+  const absPath = path.resolve(dbPath);
   try {
-    if (fs.existsSync(historyFile)) {
-      history = JSON.parse(fs.readFileSync(historyFile, 'utf8'));
+    const f = getDataFilePath(absPath, 'history.json');
+    if (fs.existsSync(f)) {
+      history = JSON.parse(fs.readFileSync(f, 'utf8'));
     }
   } catch (e) {
     history = [];
   }
   try {
-    if (fs.existsSync(scriptsFile)) {
-      savedScripts = JSON.parse(fs.readFileSync(scriptsFile, 'utf8'));
+    const f = getDataFilePath(absPath, 'scripts.json');
+    if (fs.existsSync(f)) {
+      savedScripts = JSON.parse(fs.readFileSync(f, 'utf8'));
     }
   } catch (e) {
     savedScripts = {};
   }
   try {
-    if (fs.existsSync(templatesFile)) {
-      templates = JSON.parse(fs.readFileSync(templatesFile, 'utf8'));
+    const f = getDataFilePath(absPath, 'templates.json');
+    if (fs.existsSync(f)) {
+      templates = JSON.parse(fs.readFileSync(f, 'utf8'));
     }
   } catch (e) {
     templates = {};
   }
+  migrateLegacyData(absPath);
 }
 
 function savePersistentData() {
+  if (!dbPath) return;
+  const absPath = path.resolve(dbPath);
   try {
-    fs.writeFileSync(historyFile, JSON.stringify(history.slice(-100), null, 2));
-    fs.writeFileSync(scriptsFile, JSON.stringify(savedScripts, null, 2));
-    fs.writeFileSync(templatesFile, JSON.stringify(templates, null, 2));
-  } catch (e) {}
+    fs.writeFileSync(getDataFilePath(absPath, 'history.json'), JSON.stringify(history.slice(-100), null, 2));
+    fs.writeFileSync(getDataFilePath(absPath, 'scripts.json'), JSON.stringify(savedScripts, null, 2));
+    fs.writeFileSync(getDataFilePath(absPath, 'templates.json'), JSON.stringify(templates, null, 2));
+  } catch (e) {
+    console.log(chalk.yellow(`警告: 无法保存持久化数据: ${e.message}`));
+  }
+}
+
+function migrateLegacyData(absPath) {
+  const legacyFiles = [
+    { old: '.query_history.json', new: 'history.json' },
+    { old: '.saved_scripts.json', new: 'scripts.json' },
+    { old: '.query_templates.json', new: 'templates.json' }
+  ];
+  let migrated = false;
+  for (const item of legacyFiles) {
+    const oldPath = path.resolve(item.old);
+    const newPath = getDataFilePath(absPath, item.new);
+    if (fs.existsSync(oldPath) && !fs.existsSync(newPath)) {
+      try {
+        const data = fs.readFileSync(oldPath, 'utf8');
+        fs.writeFileSync(newPath, data);
+        migrated = true;
+      } catch (e) {}
+    }
+  }
+  if (migrated) {
+    console.log(chalk.gray('  已迁移旧版持久化数据到新目录'));
+  }
 }
 
 function openDatabase(filePath) {
   return new Promise((resolve, reject) => {
-    db = new sqlite3.Database(filePath, sqlite3.OPEN_READWRITE | sqlite3.OPEN_CREATE, (err) => {
+    const absPath = path.resolve(filePath);
+    const fileExists = fs.existsSync(absPath);
+    db = new sqlite3.Database(absPath, sqlite3.OPEN_READWRITE | sqlite3.OPEN_CREATE, (err) => {
       if (err) {
         reject(err);
       } else {
-        dbPath = filePath;
+        dbPath = absPath;
         loadTableMetadata().then(() => {
           loadPersistentData();
-          console.log(chalk.green(`✓ 已连接到数据库: ${filePath}`));
+          console.log(chalk.green(`✓ 已连接到数据库: ${absPath}`));
+          if (fileExists) {
+            const stats = fs.statSync(absPath);
+            const sizeMB = (stats.size / 1024 / 1024).toFixed(2);
+            console.log(chalk.gray(`  文件大小: ${sizeMB} MB`));
+          } else {
+            console.log(chalk.gray('  (新数据库已创建)'));
+          }
           console.log(chalk.cyan(`  发现 ${Object.keys(tableMetadata).length} 个表`));
+          console.log(chalk.gray(`  数据目录: ${getDbDataDir(absPath)}`));
           resolve();
         }).catch(reject);
       }
@@ -1666,24 +1726,265 @@ function startREPL() {
   });
 }
 
-async function main() {
-  const args = process.argv.slice(2);
+async function checkMigrationStatus() {
+  try {
+    await ensureMigrationsTable();
+    const applied = await getAppliedMigrations();
+    const appliedNames = new Set(applied.map(r => r.name));
+    const files = getMigrationFiles();
+    const pending = files.filter(f => !appliedNames.has(f));
 
-  if (args.length < 2 || args[0] !== 'open') {
-    console.log(chalk.red('用法: node querybuilder.js open DATABASE.db'));
-    console.log(chalk.gray('\n示例:'));
-    console.log('  node querybuilder.js open ecommerce.db');
+    if (pending.length > 0) {
+      console.log(chalk.yellow(`\n⚠ 有 ${pending.length} 个待执行的迁移:`));
+      pending.forEach(f => console.log(chalk.yellow(`  - ${f}`)));
+      console.log(chalk.gray('  在 REPL 中执行 migrate up 或使用命令: node querybuilder.js migrate <数据库> up'));
+    }
+  } catch (e) {}
+}
+
+async function runSeed() {
+  const seedPath = path.join(__dirname, 'seed.js');
+  if (!fs.existsSync(seedPath)) {
+    console.log(chalk.yellow('seed.js 不存在，跳过数据填充'));
+    return;
+  }
+  delete require.cache[require.resolve(seedPath)];
+  const seedModule = require(seedPath);
+  if (typeof seedModule.run === 'function') {
+    await seedModule.run(db);
+    await loadTableMetadata();
+  } else {
+    console.log(chalk.yellow('seed.js 未导出 run 函数，请手动运行: node seed.js <数据库路径>'));
+  }
+}
+
+async function cmdInit(dbFile, flags) {
+  const absPath = path.resolve(dbFile);
+
+  if (fs.existsSync(absPath)) {
+    if (flags.force) {
+      console.log(chalk.yellow(`数据库已存在，--force 模式将重建: ${absPath}`));
+      fs.unlinkSync(absPath);
+    } else {
+      console.log(chalk.yellow(`数据库已存在: ${absPath}`));
+      console.log(chalk.gray('使用 --force 强制重建，或使用 open 命令打开'));
+      process.exit(1);
+    }
+  }
+
+  await openDatabase(absPath);
+
+  console.log(chalk.cyan('\n执行数据库迁移...'));
+  await migrateUp();
+
+  if (flags.seed) {
+    console.log(chalk.cyan('\n执行数据填充...'));
+    await runSeed();
+  }
+
+  console.log(chalk.green('\n✓ 数据库初始化完成'));
+  console.log(chalk.gray(`  数据库: ${absPath}`));
+  console.log(chalk.gray(`  数据目录: ${getDbDataDir(absPath)}`));
+  console.log(chalk.gray(`\n使用以下命令打开: node querybuilder.js open ${dbFile}`));
+
+  db.close();
+  process.exit(0);
+}
+
+async function cmdMigrate(args) {
+  const dbFile = args[0];
+  if (!dbFile) {
+    console.log(chalk.red('用法: node querybuilder.js migrate <数据库> [up|down|status|create <名称>]'));
     process.exit(1);
   }
 
-  const dbFile = args[1];
+  const absPath = path.resolve(dbFile);
+  if (!fs.existsSync(absPath)) {
+    console.log(chalk.red(`数据库不存在: ${absPath}`));
+    console.log(chalk.gray('使用 init 命令初始化数据库'));
+    process.exit(1);
+  }
+
+  await openDatabase(absPath);
+
+  const action = args[1] || 'up';
+
+  if (action === 'create') {
+    const name = args[2];
+    if (!name) {
+      console.log(chalk.red('用法: node querybuilder.js migrate <数据库> create <名称>'));
+      process.exit(1);
+    }
+    await migrateCreate(name);
+  } else if (action === 'up') {
+    await migrateUp();
+  } else if (action === 'down') {
+    await migrateDown();
+  } else if (action === 'status') {
+    await migrateStatus();
+  } else {
+    console.log(chalk.red(`未知操作: ${action}`));
+    console.log(chalk.gray('可用操作: up, down, status, create <名称>'));
+  }
+
+  db.close();
+  process.exit(0);
+}
+
+async function cmdOpen(dbFile) {
+  if (!dbFile) {
+    console.log(chalk.red('用法: node querybuilder.js open <数据库>'));
+    process.exit(1);
+  }
+
+  const absPath = path.resolve(dbFile);
+
+  if (!fs.existsSync(absPath)) {
+    console.log(chalk.yellow(`数据库文件不存在: ${absPath}`));
+    console.log(chalk.gray('将创建新数据库。如需完整初始化，建议使用: node querybuilder.js init <数据库>'));
+  }
 
   try {
-    await openDatabase(dbFile);
+    await openDatabase(absPath);
+    await checkMigrationStatus();
     startREPL();
   } catch (e) {
     console.log(chalk.red(`无法打开数据库: ${e.message}`));
     process.exit(1);
+  }
+}
+
+async function cmdSeed(dbFile) {
+  if (!dbFile) {
+    console.log(chalk.red('用法: node querybuilder.js seed <数据库>'));
+    process.exit(1);
+  }
+
+  const absPath = path.resolve(dbFile);
+  if (!fs.existsSync(absPath)) {
+    console.log(chalk.red(`数据库不存在: ${absPath}`));
+    console.log(chalk.gray('请先使用 init 命令初始化数据库'));
+    process.exit(1);
+  }
+
+  await openDatabase(absPath);
+  await runSeed();
+
+  db.close();
+  process.exit(0);
+}
+
+async function cmdStatus(dbFile) {
+  if (!dbFile) {
+    console.log(chalk.red('用法: node querybuilder.js status <数据库>'));
+    process.exit(1);
+  }
+
+  const absPath = path.resolve(dbFile);
+  if (!fs.existsSync(absPath)) {
+    console.log(chalk.red(`数据库不存在: ${absPath}`));
+    process.exit(1);
+  }
+
+  await openDatabase(absPath);
+
+  console.log(chalk.bold('\n数据库状态:'));
+  const stats = fs.statSync(absPath);
+  console.log(`  路径: ${absPath}`);
+  console.log(`  大小: ${(stats.size / 1024 / 1024).toFixed(2)} MB`);
+  console.log(`  修改时间: ${stats.mtime.toISOString()}`);
+  console.log(`  表数量: ${Object.keys(tableMetadata).length}`);
+  console.log(`  数据目录: ${getDbDataDir(absPath)}`);
+
+  if (Object.keys(tableMetadata).length > 0) {
+    console.log(chalk.bold('\n表列表:'));
+    for (const tableName of Object.keys(tableMetadata)) {
+      try {
+        const countResult = await runQuery(`SELECT COUNT(*) as cnt FROM "${tableName}"`);
+        console.log(`  ${chalk.cyan(tableName)}: ${countResult[0].cnt} 行, ${tableMetadata[tableName].length} 列`);
+      } catch (e) {
+        console.log(`  ${chalk.cyan(tableName)}: ${tableMetadata[tableName].length} 列`);
+      }
+    }
+  }
+
+  await migrateStatus();
+
+  db.close();
+  process.exit(0);
+}
+
+function printUsage() {
+  console.log(chalk.bold('\nSQLite 查询构建器 CLI'));
+  console.log(chalk.gray('━'.repeat(50)));
+  console.log(chalk.cyan('\n命令:'));
+  console.log('  init <数据库> [--seed] [--force]     初始化数据库 (创建+迁移+可选填充)');
+  console.log('  open <数据库>                        打开数据库 (交互式 REPL)');
+  console.log('  migrate <数据库> [up|down|status]    执行迁移 (不进入 REPL)');
+  console.log('  migrate <数据库> create <名称>       创建迁移文件');
+  console.log('  seed <数据库>                        填充示例数据');
+  console.log('  status <数据库>                      查看数据库状态');
+  console.log(chalk.cyan('\n环境变量:'));
+  console.log('  QB_DATA_DIR    持久化数据目录 (默认: ~/.querybuilder)');
+  console.log(chalk.cyan('\n示例:'));
+  console.log('  node querybuilder.js init ecommerce.db --seed');
+  console.log('  node querybuilder.js open ecommerce.db');
+  console.log('  node querybuilder.js migrate ecommerce.db up');
+  console.log('  node querybuilder.js status ecommerce.db');
+  console.log();
+}
+
+async function main() {
+  const args = process.argv.slice(2);
+  const command = args[0];
+
+  if (!command) {
+    printUsage();
+    process.exit(1);
+  }
+
+  switch (command) {
+    case 'init': {
+      const dbFile = args[1];
+      if (!dbFile) {
+        console.log(chalk.red('用法: node querybuilder.js init <数据库> [--seed] [--force]'));
+        process.exit(1);
+      }
+      const flags = {
+        seed: args.includes('--seed'),
+        force: args.includes('--force')
+      };
+      await cmdInit(dbFile, flags);
+      break;
+    }
+
+    case 'open': {
+      const dbFile = args[1];
+      await cmdOpen(dbFile);
+      break;
+    }
+
+    case 'migrate': {
+      await cmdMigrate(args.slice(1));
+      break;
+    }
+
+    case 'seed': {
+      const dbFile = args[1];
+      await cmdSeed(dbFile);
+      break;
+    }
+
+    case 'status': {
+      const dbFile = args[1];
+      await cmdStatus(dbFile);
+      break;
+    }
+
+    default:
+      console.log(chalk.red(`未知命令: ${command}`));
+      printUsage();
+      process.exit(1);
   }
 }
 
