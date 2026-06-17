@@ -1,13 +1,6 @@
 const sqlite3 = require('sqlite3').verbose();
 const fs = require('fs');
-
-const dbFile = 'ecommerce.db';
-
-if (fs.existsSync(dbFile)) {
-  fs.unlinkSync(dbFile);
-}
-
-const db = new sqlite3.Database(dbFile);
+const path = require('path');
 
 const firstNames = ['张', '李', '王', '赵', '刘', '陈', '杨', '黄', '周', '吴', '徐', '孙', '胡', '朱', '高', '林', '何', '郭', '马', '罗'];
 const lastNames = ['伟', '芳', '娜', '敏', '静', '丽', '强', '磊', '洋', '艳', '勇', '军', '杰', '娟', '涛', '明', '超', '秀英', '霞', '平'];
@@ -33,103 +26,229 @@ function randomDate(start, end) {
   return new Date(start.getTime() + Math.random() * (end.getTime() - start.getTime())).toISOString().split('T')[0];
 }
 
-db.serialize(() => {
-  db.run(`CREATE TABLE users (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT NOT NULL,
-    email TEXT UNIQUE NOT NULL,
-    phone TEXT,
-    age INTEGER,
-    city TEXT,
-    created_at TEXT DEFAULT CURRENT_TIMESTAMP
-  )`);
+function fillData(db) {
+  return new Promise((resolve, reject) => {
+    db.serialize(() => {
+      db.run(`CREATE TABLE IF NOT EXISTS users (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        email TEXT UNIQUE NOT NULL,
+        phone TEXT,
+        age INTEGER,
+        city TEXT,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP
+      )`);
 
-  db.run(`CREATE TABLE products (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT NOT NULL,
-    category TEXT,
-    price REAL NOT NULL,
-    stock INTEGER DEFAULT 0,
-    description TEXT,
-    created_at TEXT DEFAULT CURRENT_TIMESTAMP
-  )`);
+      db.run(`CREATE TABLE IF NOT EXISTS products (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        category TEXT,
+        price REAL NOT NULL,
+        stock INTEGER DEFAULT 0,
+        description TEXT,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP
+      )`);
 
-  db.run(`CREATE TABLE orders (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id INTEGER NOT NULL,
-    total REAL NOT NULL,
-    status TEXT DEFAULT 'pending',
-    order_date TEXT NOT NULL,
-    FOREIGN KEY (user_id) REFERENCES users(id)
-  )`);
+      db.run(`CREATE TABLE IF NOT EXISTS orders (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL,
+        total REAL NOT NULL,
+        status TEXT DEFAULT 'pending',
+        order_date TEXT NOT NULL,
+        FOREIGN KEY (user_id) REFERENCES users(id)
+      )`);
 
-  db.run(`CREATE TABLE order_items (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    order_id INTEGER NOT NULL,
-    product_id INTEGER NOT NULL,
-    quantity INTEGER NOT NULL,
-    price REAL NOT NULL,
-    FOREIGN KEY (order_id) REFERENCES orders(id),
-    FOREIGN KEY (product_id) REFERENCES products(id)
-  )`);
+      db.run(`CREATE TABLE IF NOT EXISTS order_items (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        order_id INTEGER NOT NULL,
+        product_id INTEGER NOT NULL,
+        quantity INTEGER NOT NULL,
+        price REAL NOT NULL,
+        FOREIGN KEY (order_id) REFERENCES orders(id),
+        FOREIGN KEY (product_id) REFERENCES products(id)
+      )`);
 
-  const userStmt = db.prepare('INSERT INTO users (name, email, phone, age, city, created_at) VALUES (?, ?, ?, ?, ?, ?)');
-  for (let i = 1; i <= 100; i++) {
-    const name = randomName();
-    userStmt.run(
-      name,
-      randomEmail(name),
-      randomPhone(),
-      Math.floor(Math.random() * 50) + 18,
-      cities[Math.floor(Math.random() * cities.length)],
-      randomDate(new Date(2023, 0, 1), new Date(2024, 5, 30))
-    );
+      const userStmt = db.prepare('INSERT OR IGNORE INTO users (name, email, phone, age, city, created_at) VALUES (?, ?, ?, ?, ?, ?)');
+      for (let i = 1; i <= 100; i++) {
+        const name = randomName();
+        userStmt.run(
+          name,
+          randomEmail(name),
+          randomPhone(),
+          Math.floor(Math.random() * 50) + 18,
+          cities[Math.floor(Math.random() * cities.length)],
+          randomDate(new Date(2023, 0, 1), new Date(2024, 5, 30))
+        );
+      }
+      userStmt.finalize();
+
+      const productStmt = db.prepare('INSERT INTO products (name, category, price, stock, description) VALUES (?, ?, ?, ?, ?)');
+      for (let i = 1; i <= 100; i++) {
+        const pname = productNames[Math.floor(Math.random() * productNames.length)];
+        productStmt.run(
+          `${pname} ${Math.floor(Math.random() * 100)}`,
+          categories[Math.floor(Math.random() * categories.length)],
+          Math.floor(Math.random() * 5000) + 50,
+          Math.floor(Math.random() * 500) + 10,
+          `这是一款高品质的${pname}，性能卓越，性价比高。`
+        );
+      }
+      productStmt.finalize();
+
+      const orderStmt = db.prepare('INSERT INTO orders (user_id, total, status, order_date) VALUES (?, ?, ?, ?)');
+      const orderItemStmt = db.prepare('INSERT INTO order_items (order_id, product_id, quantity, price) VALUES (?, ?, ?, ?)');
+
+      for (let i = 1; i <= 100; i++) {
+        const userId = Math.floor(Math.random() * 100) + 1;
+        const orderDate = randomDate(new Date(2024, 0, 1), new Date(2024, 11, 31));
+        const itemCount = Math.floor(Math.random() * 5) + 1;
+        let total = 0;
+
+        const orderId = i;
+        for (let j = 0; j < itemCount; j++) {
+          const productId = Math.floor(Math.random() * 100) + 1;
+          const quantity = Math.floor(Math.random() * 5) + 1;
+          const price = Math.floor(Math.random() * 5000) + 50;
+          total += price * quantity;
+          orderItemStmt.run(orderId, productId, quantity, price);
+        }
+
+        orderStmt.run(userId, total, statuses[Math.floor(Math.random() * statuses.length)], orderDate);
+      }
+
+      orderStmt.finalize();
+      orderItemStmt.finalize();
+
+      db.close((err) => {
+        if (err) reject(err);
+        else resolve();
+      });
+    });
+  });
+}
+
+exports.run = async function(externalDb) {
+  if (externalDb) {
+    return new Promise((resolve, reject) => {
+      externalDb.serialize(() => {
+        externalDb.run(`CREATE TABLE IF NOT EXISTS users (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          name TEXT NOT NULL,
+          email TEXT UNIQUE NOT NULL,
+          phone TEXT,
+          age INTEGER,
+          city TEXT,
+          created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )`);
+
+        externalDb.run(`CREATE TABLE IF NOT EXISTS products (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          name TEXT NOT NULL,
+          category TEXT,
+          price REAL NOT NULL,
+          stock INTEGER DEFAULT 0,
+          description TEXT,
+          created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )`);
+
+        externalDb.run(`CREATE TABLE IF NOT EXISTS orders (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          user_id INTEGER NOT NULL,
+          total REAL NOT NULL,
+          status TEXT DEFAULT 'pending',
+          order_date TEXT NOT NULL,
+          FOREIGN KEY (user_id) REFERENCES users(id)
+        )`);
+
+        externalDb.run(`CREATE TABLE IF NOT EXISTS order_items (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          order_id INTEGER NOT NULL,
+          product_id INTEGER NOT NULL,
+          quantity INTEGER NOT NULL,
+          price REAL NOT NULL,
+          FOREIGN KEY (order_id) REFERENCES orders(id),
+          FOREIGN KEY (product_id) REFERENCES products(id)
+        )`);
+
+        const userStmt = externalDb.prepare('INSERT OR IGNORE INTO users (name, email, phone, age, city, created_at) VALUES (?, ?, ?, ?, ?, ?)');
+        for (let i = 1; i <= 100; i++) {
+          const name = randomName();
+          userStmt.run(
+            name,
+            randomEmail(name),
+            randomPhone(),
+            Math.floor(Math.random() * 50) + 18,
+            cities[Math.floor(Math.random() * cities.length)],
+            randomDate(new Date(2023, 0, 1), new Date(2024, 5, 30))
+          );
+        }
+        userStmt.finalize();
+
+        const productStmt = externalDb.prepare('INSERT INTO products (name, category, price, stock, description) VALUES (?, ?, ?, ?, ?)');
+        for (let i = 1; i <= 100; i++) {
+          const pname = productNames[Math.floor(Math.random() * productNames.length)];
+          productStmt.run(
+            `${pname} ${Math.floor(Math.random() * 100)}`,
+            categories[Math.floor(Math.random() * categories.length)],
+            Math.floor(Math.random() * 5000) + 50,
+            Math.floor(Math.random() * 500) + 10,
+            `这是一款高品质的${pname}，性能卓越，性价比高。`
+          );
+        }
+        productStmt.finalize();
+
+        const orderStmt = externalDb.prepare('INSERT INTO orders (user_id, total, status, order_date) VALUES (?, ?, ?, ?)');
+        const orderItemStmt = externalDb.prepare('INSERT INTO order_items (order_id, product_id, quantity, price) VALUES (?, ?, ?, ?)');
+
+        for (let i = 1; i <= 100; i++) {
+          const userId = Math.floor(Math.random() * 100) + 1;
+          const orderDate = randomDate(new Date(2024, 0, 1), new Date(2024, 11, 31));
+          const itemCount = Math.floor(Math.random() * 5) + 1;
+          let total = 0;
+
+          const orderId = i;
+          for (let j = 0; j < itemCount; j++) {
+            const productId = Math.floor(Math.random() * 100) + 1;
+            const quantity = Math.floor(Math.random() * 5) + 1;
+            const price = Math.floor(Math.random() * 5000) + 50;
+            total += price * quantity;
+            orderItemStmt.run(orderId, productId, quantity, price);
+          }
+
+          orderStmt.run(userId, total, statuses[Math.floor(Math.random() * statuses.length)], orderDate);
+        }
+
+        orderStmt.finalize();
+        orderItemStmt.finalize();
+
+        externalDb.run('SELECT 1', (err) => {
+          if (err) reject(err);
+          else resolve();
+        });
+      });
+    });
   }
-  userStmt.finalize();
+};
 
-  const productStmt = db.prepare('INSERT INTO products (name, category, price, stock, description) VALUES (?, ?, ?, ?, ?)');
-  for (let i = 1; i <= 100; i++) {
-    const pname = productNames[Math.floor(Math.random() * productNames.length)];
-    productStmt.run(
-      `${pname} ${Math.floor(Math.random() * 100)}`,
-      categories[Math.floor(Math.random() * categories.length)],
-      Math.floor(Math.random() * 5000) + 50,
-      Math.floor(Math.random() * 500) + 10,
-      `这是一款高品质的${pname}，性能卓越，性价比高。`
-    );
+if (require.main === module) {
+  const dbFile = process.argv[2] || 'ecommerce.db';
+
+  if (fs.existsSync(dbFile)) {
+    fs.unlinkSync(dbFile);
   }
-  productStmt.finalize();
 
-  const orderStmt = db.prepare('INSERT INTO orders (user_id, total, status, order_date) VALUES (?, ?, ?, ?)');
-  const orderItemStmt = db.prepare('INSERT INTO order_items (order_id, product_id, quantity, price) VALUES (?, ?, ?, ?)');
-  
-  for (let i = 1; i <= 100; i++) {
-    const userId = Math.floor(Math.random() * 100) + 1;
-    const orderDate = randomDate(new Date(2024, 0, 1), new Date(2024, 11, 31));
-    const itemCount = Math.floor(Math.random() * 5) + 1;
-    let total = 0;
-    
-    const orderId = i;
-    for (let j = 0; j < itemCount; j++) {
-      const productId = Math.floor(Math.random() * 100) + 1;
-      const quantity = Math.floor(Math.random() * 5) + 1;
-      const price = Math.floor(Math.random() * 5000) + 50;
-      total += price * quantity;
-      orderItemStmt.run(orderId, productId, quantity, price);
-    }
-    
-    orderStmt.run(userId, total, statuses[Math.floor(Math.random() * statuses.length)], orderDate);
-  }
-  
-  orderStmt.finalize();
-  orderItemStmt.finalize();
+  const db = new sqlite3.Database(dbFile);
 
-  console.log('数据库生成完成！');
-  console.log('表结构:');
-  console.log('  - users (100行): 用户表');
-  console.log('  - products (100行): 商品表');
-  console.log('  - orders (100行): 订单表 (外键: user_id -> users.id)');
-  console.log('  - order_items (约300行): 订单项表 (外键: order_id -> orders.id, product_id -> products.id)');
-});
-
-db.close();
+  fillData(db).then(() => {
+    console.log('数据库生成完成！');
+    console.log(`  数据库文件: ${path.resolve(dbFile)}`);
+    console.log('  表结构:');
+    console.log('  - users (100行): 用户表');
+    console.log('  - products (100行): 商品表');
+    console.log('  - orders (100行): 订单表 (外键: user_id -> users.id)');
+    console.log('  - order_items (约300行): 订单项表 (外键: order_id -> orders.id, product_id -> products.id)');
+  }).catch(err => {
+    console.error('数据库生成失败:', err.message);
+    process.exit(1);
+  });
+}
