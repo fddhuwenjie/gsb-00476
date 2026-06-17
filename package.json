@@ -1,16 +1,33 @@
 {
   "name": "hwj-00476",
   "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
+  "description": "基于 SQLite 的交互式查询构建器 CLI 工具",
+  "main": "querybuilder.js",
+  "bin": {
+    "qb": "./querybuilder.js",
+    "querybuilder": "./querybuilder.js"
+  },
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "start": "node querybuilder.js open ecommerce.db",
+    "init": "node querybuilder.js init",
+    "seed": "node querybuilder.js seed ecommerce.db",
+    "migrate:up": "node querybuilder.js migrate up ecommerce.db",
+    "migrate:down": "node querybuilder.js migrate down ecommerce.db",
+    "migrate:status": "node querybuilder.js migrate status ecommerce.db",
+    "repl": "node querybuilder.js open ecommerce.db",
+    "env": "node querybuilder.js env"
   },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/fddhuwenjie/hwj-00476.git"
   },
-  "keywords": [],
+  "keywords": [
+    "sqlite",
+    "query-builder",
+    "cli",
+    "database",
+    "repl"
+  ],
   "author": "",
   "license": "ISC",
   "type": "commonjs",
@@ -18,6 +35,9 @@
     "url": "https://github.com/fddhuwenjie/hwj-00476/issues"
   },
   "homepage": "https://github.com/fddhuwenjie/hwj-00476#readme",
+  "engines": {
+    "node": ">=14.0.0"
+  },
   "dependencies": {
     "chalk": "^4.1.2",
     "cli-table3": "^0.6.5",

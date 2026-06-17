@@ -1,4 +1,7 @@
 node_modules/
 *.db
+data/
+.qb/
 .query_history.json
 .saved_scripts.json
+.query_templates.json
