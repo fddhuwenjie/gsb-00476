@@ -1,9 +1,22 @@
 {
   "name": "hwj-00476",
-  "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
+  "version": "2.0.0",
+  "description": "SQLite 交互式查询构建器 CLI 工具",
+  "main": "querybuilder.js",
+  "bin": {
+    "qb": "./querybuilder.js",
+    "querybuilder": "./querybuilder.js"
+  },
   "scripts": {
+    "start": "node querybuilder.js",
+    "init": "node querybuilder.js init data/ecommerce.db --migrate --seed",
+    "open": "node querybuilder.js open data/ecommerce.db",
+    "migrate:up": "node querybuilder.js migrate up data/ecommerce.db",
+    "migrate:down": "node querybuilder.js migrate down data/ecommerce.db",
+    "migrate:status": "node querybuilder.js migrate status data/ecommerce.db",
+    "migrate:create": "node querybuilder.js migrate create",
+    "seed": "node seed.js",
+    "help": "node querybuilder.js help",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "repository": {

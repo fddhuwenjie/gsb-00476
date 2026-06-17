@@ -1,4 +1,10 @@
 node_modules/
 *.db
+*.db-journal
+*.data/
+data/
 .query_history.json
 .saved_scripts.json
+.query_templates.json
+export_*
+*.tmp
